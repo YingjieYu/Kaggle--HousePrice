@@ -1,0 +1,126 @@
+---
+title: "HousePrice_preprocessing"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Pre-processing
+
+```{r}
+df_train <- read.csv("train.csv")
+df_test <- read.csv("test.csv")
+
+```
+
+#### Analysing 'SalePrice'
+```{r SalePrice}
+#The skewness function in the e1071 package calculates the sample skewness:
+library(e1071)
+skewness(df_train$SalePrice)
+
+#ps: if we need skewness across columns, use apply funtion, but make sure to remain only numeric variables in the dataframe
+nums <- sapply(df_train, is.numeric)
+df_train_nums <- df_train[, nums]
+skewValues <- apply(df_train_nums, 2, skewness)
+#skewValues[skewValues > 0.8]
+
+#To determine which type of transformation should be used, use boxcox fuction(a kind of complements to log trainsfomation).
+library(caret)
+SalesPriceBoxCox <- BoxCoxTrans(df_train$SalePrice)
+SalesPriceBoxCox
+df_train$SalePrice <- predict(SalesPriceBoxCox, df_train$SalePrice)
+hist(df_train$SalePrice)
+
+```
+
+
+####  Filter for near-zero variance predictors
+```{r  }
+#Filter for near-zero variance predictors(which will intervane the prediction)
+nearZeroVar(df_train)
+as.vector(nearZeroVar(df_train))
+length(nearZeroVar(df_train))
+df_train <-df_train[, -as.vector(nearZeroVar(df_train))]
+
+# filter on between-predictor correlations
+
+correlations <- cor(df_train_nums)
+correlations<-as.data.frame(correlations)
+
+# visually examine the correlation structure of the data
+pairs(~SalePrice+GrLivArea+OverallQual+TotalBsmtSF)
+library(plotly)
+p <- plot_ly(x = names(df_train_nums), y =  names(df_train_nums),z = correlations, type = "heatmap")
+p
+```
+'OverallQual', 'GrLivArea' and 'TotalBsmtSF' are strongly correlated with 'SalePrice'. 'GarageCars' and 'GarageArea' are also some of the most strongly correlated variables. 'TotalBsmtSF' and '1stFloor' seem to have strong correlation. We can furthur check whether we should keep just 'TotalBsmtSF'.
+
+We can plot scatter plots between 'SalePrice' and correlated variables, which may gives us a reasonable idea about variables relationships.
+
+#### Missing Data
+
+For simplicity, we just use preProcess to deal with missing value, which applies imputation methods based on K-nearest neighbors or bagged trees.Before that, consider that when more than 15% of the data is missing, we can first delete the corresponding variable and pretend it never existed. Then consider adding back them when needed.
+```{r Missing Data}
+sort(sapply(df_train, function(x) sum(is.na(x))))
+colummn_to_delete <-c("PoolQC","MiscFeature","Alley","Fence","FireplaceQu","LotFrontage")
+df_train_narrow <- df_train[, -which(names(df_train) %in% colummn_to_delete)]
+
+library(RANN)
+trans <- preProcess(df_train_narrow,
+                    method = c("knnImpute","BoxCox","center","scale"))
+trans
+# Apply the transformations:
+df_train_transformed <- predict(trans, df_train_narrow)
+
+```
+
+```{r PCA using prcomp}
+# Using PCA to gain an idea of the variances and relative importance of thos variables
+transformed_nums <- sapply(df_train_transformed, is.numeric)
+
+df_train_transformed_nums <- df_train_transformed[, transformed_nums]
+#drop ID column
+df_train_transformed_nums<-df_train_transformed_nums[, -c(1)]
+pcaObject <- prcomp(df_train_transformed_nums)
+# calculate the cumulative percentage of variance which each component accounts for
+percentVariance <- pcaObject$sd^2/sum(pcaObject$sd^2)*100
+percentVariance[1:3]
+
+head(pcaObject$x[, 1:5])
+head(pcaObject$rotation[, 1:3])
+```
+
+#### Outliers
+do a quick analysis through the standard deviation of 'SalePrice' and a set of scatter plots.
+Outliers would not be a problem for some models like trees and neutral newtwork.
+```{r}
+#The primary concern here is to establish a threshold that defines an observation as an outlier. To do so, standardize the data, which already has been done.
+attach(df_train_transformed)
+plot(GrLivArea, SalePrice)
+#deleting points
+head(sort(df_train_transformed$GrLivArea, decreasing = TRUE))
+which(df_train_transformed$GrLivArea > 3.5)
+df_train_transformed<-df_train_transformed[-c(524,1299),]
+
+plot(TotalBsmtSF, SalePrice)
+df_train_transformed<-df_train_transformed[-which(TotalBsmtSF >10),]
+
+detach(df_train_transformed)
+
+```
+
+#### Creating Dummy Variable
+p.s: If we are working with tree-based models, we should use a complete set of dummy variables. 
+```{r}
+factor_ <- sapply(df_train_transformed, is.factor)
+factor_variables <- names(df_train_transformed)[factor_ == TRUE]
+factor_variables
+dummy <- dummyVars(" ~ .",data= df_train_transformed)
+dummy
+df_train_transformed_dummy <- data.frame(predict(dummy,df_train_transformed))
+length(names(df_train_transformed_dummy))
+```
+

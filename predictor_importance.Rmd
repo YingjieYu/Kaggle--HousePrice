@@ -1,0 +1,276 @@
+---
+title: "Measuring Predictor Importance"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Numeric Preditors
+
+```{r corr spearman}
+library(AppliedPredictiveModeling)
+df_train <- read.csv("train.csv")
+#get numeric variables
+nums <- sapply(df_train, is.numeric)
+df_train_nums <- df_train[, nums]
+numPredictors <- df_train_nums[,2:37]
+SalePrice <- df_train$SalePrice
+
+corrValues <- apply(numPredictors,
+                    MARGIN = 2,
+                    FUN = function(x,y) cor(x,y),
+                    y = SalePrice)
+head(sort(corrValues, decreasing = TRUE))
+#The obtain the rank correlation, the corr function has an option method = "spearman".
+corrValues_sp <- apply(numPredictors,
+                    MARGIN = 2,
+                    FUN = function(x,y) cor(x,y, method = "spearman"),
+                    y = SalePrice)
+head(sort(corrValues_sp, decreasing = TRUE))
+```
+
+
+The LOESS smoother can be accessed with the loess function in the stats library. The formula method is used to specify the model:
+```{r LOESS}
+# LOESS:locally weighted regression model.This technique is based on a series polynomial regressions that model the data in small neighborhoods (similar to computing a mov- ing average). The approach can be effective at creating smooth regression trends that are extremely adaptive. 
+library(stats)
+smoother <- loess(SalePrice ~ numPredictors$OverallQual)
+smoother
+#The lattice function xyplot is convenient for displaying the LOESS fit:
+xyplot(SalePrice ~ numPredictors$OverallQual,
+       type = c("p","smooth"),
+       xlab = "# OverallQual",
+       ylab = "SalePrice")
+
+#The caret function filterVarImp with the nonpara = TRUE option (for nonpara- metric regression) creates a LOESS model for each predictor and quantifies the relationship with the outcome:
+
+loessResults <- filterVarImp(x = numPredictors,
+                             y = SalePrice,
+                             nonpara = TRUE)
+head(loessResults)
+
+#The minerva package can be used to calculate the MIC statistics between the predictors and outcomes. The mine function computes several quantities including the MIC value:
+library(minerva)
+micValues <- mine(numPredictors, SalePrice, use = 'pairwise.complete.obs')
+## several statistics are calculated
+names(micValues)
+head(micValues$MIC)
+```
+
+## Categorical Preditors
+For categorical predictors, the simple t.test function computes the differ- ence in means and the p-value
+```{r }
+factor_ <- sapply(df_train, is.factor)
+factorPredictors <- df_train[, factor_]
+dummy <- dummyVars(" ~ .",data= factorPredictors)
+factorPredictors_dummy <- data.frame(predict(dummy, factorPredictors))
+factorPredictors[,1] <- as.factor(factorPredictors_dummy[,1])
+t.test(SalePrice ~ factorPredictors[,1])
+
+#This approach can be extended to all predictors using apply in a manner similar to the one shown above for correlations.
+factorPredictors_dummy <- data.frame(apply(factorPredictors_dummy,2, as.factor))
+
+nearZeroVar(factorPredictors_dummy)
+factorPredictors_dummy <-factorPredictors_dummy[, -as.vector(nearZeroVar(factorPredictors_dummy))]
+
+
+getTstats <- function(x,y){
+  tTest <- t.test(y~x)
+  out <- c(tStat = tTest$statistic, p = tTest$p.value)
+  out
+}
+tVals <- apply(factorPredictors_dummy, MARGIN = 2, 
+               FUN = getTstats,
+               y = SalePrice)
+tVals<-data.frame(t(tVals))
+head(tVals)
+```
+
+## categorical Outcomes
+here we illustrate by turning saleprice into categorical output
+```{r saleprice categories}
+SalePrice <- log(df_train$SalePrice)
+hist(SalePrice)
+
+mean  = mean(SalePrice)
+sd = sd(SalePrice)
+
+df_train$PriceCat <-SalePrice
+df_train$PriceCat <- ifelse(df_train$PriceCat < mean-sd,"low",
+                            ifelse(df_train$PriceCat > mean+sd,"high","normal"))
+df_train$PriceCat <- as.factor(df_train$PriceCat)
+```
+
+```{r roc}
+#The filterVarImp function also calculates the area under the ROC curve when the outcome variable is an R factor variable:
+
+#When there are three or more classes, filterVarImp will compute ROC curves for each class versus the others and then returns the largest area under the curve.
+
+PriceCat <- df_train$PriceCat
+rocValues <- filterVarImp(x = factorPredictors_dummy,
+                          y = PriceCat)
+head(rocValues)
+
+```
+
+```{r Relief}
+#The Relief statistics can be calculated using the CORElearn package. The function attrEval will calculate several versions of Relief (using the estimator option):
+library(CORElearn)
+reliefValues <- attrEval(PriceCat~., data = df_train,
+                         ## There are many Relief methods
+                          ## available. See ?attrEval
+                         estimator = "ReliefFequalK",
+                         ## The number of instances tested:
+                         ReliefIterations = 50)
+head(reliefValues)
+#This function can also be used to calculate the gain ratio, Gini index, and other scores. To use a permutation approach to investigate the observed values of the ReliefF statistic, the AppliedPredictiveModeling package has a function permuteRelief:
+library(AppliedPredictiveModeling)
+perm <- permuteRelief(x= df_train[,-1],
+                      y = df_train$PriceCat,
+                      nperm = 500,
+                      estimator = "ReliefFequalK",
+                      ReliefIterations = 50)
+#The permuted ReliefF scores are contained in a sub-object called permutations:
+head(perm$permutations)
+
+#The permutation distributions for the ReliefF scores can be helpful
+histogram(~ value|Predictor,
+          data = perm$permutations)
+#the standardized versions of the scores are in the sub-object called standardized and represent the number of standard deviations that the ob- served ReliefF values (i.e., without permuting) are from the center of the permuted distribution:
+head(sort(perm$standardized, decreasing = TRUE))
+
+```
+
+```{r odds ratio}
+#To compute the odds ratio and a statistical test of association, the fisher.test function in the stats library can be applied.
+ExterQualTable <- table(df_train[,"ExterQual"],
+                        df_train[,"PriceCat"])
+ExterQualTable
+#fisher.test(ExterQualTable)
+#In some cases, Fisher’s exact test may be computationally prohibitive. In these cases, the χ2 test for association can be computed:
+chisq.test(ExterQualTable)
+```
+
+## Model-Based Importance Scores
+As described in the previous chapters, many models have built-in approaches for measuring the aggregate effect of the predictors on the model. The caret package contains a general class for calculating or returning these values. As of this writing, there are methods for 27 R classes, including: C5.0, JRip, PART, RRF, RandomForest, bagEarth, classbagg, cubist, dsa, earth, fda, gam, gbm, glm, glmnet, lm, multinom, mvr, nnet, pamrtrained, plsda, randomForest, regbagg, rfe, rpart, sbf, and train.
+```{r random forest}
+library(randomForest)
+set.seed(791)
+rfImp <- randomForest(x = df_train, y = SalePrice,
+                      ntree = 2000,
+                      na.action = na.omit,
+                      importance = TRUE)
+head(varImp(rfImp))
+```
+
+## Feature Selection
+demon- strates how feature selection can be conducted in R for a subset of the anal- yses.
+```{r basics}
+## Create a function to compute the area under the ROC curve, sensitivity, specificity, accuracy and Kappa
+fiveStats <- function(...) c(twoClassSummary(...),
+                              defaultSummary(...))
+
+nearZeroVar(df_train)
+train <-df_train[, -as.vector(nearZeroVar(df_train))]
+train <- train[, -which(names(train) %in% c("PoolQC","Fence","Alley","FireplaceQu"))]
+trans <- preProcess(train,method = "knnImpute")
+train <- predict(trans, train)
+train <- na.omit(train)
+
+# create resampling data sets to use for all models
+set.seed(104)
+index <- createMultiFolds(train$SalePrice, times = 5)
+
+## create a vector of subset sizes to evaluate
+predVars <- names(train)[!(names(df_train) %in% c("SalePrice","Id"))]
+varSeq <- seq(1, length(predVars) -1, by = 2)
+varSeq
+```
+stepinthestatspackagecanbeusedtosearchforappropriatesubsetsfor linear regression and generalized linear models (from the lm and glm func- tions, respectively). The direction argument controls the search method(e.g. “both,” “backward,” or “forward”). A more general function is the stepAIC function in the MASS package, which can handle additional model types. In either case, the AIC statistic (or its variants) is used as the objective function.
+
+The caret package function train has wrappers for leaps, stepAIC, and stepclass, so that the entire feature selection process can be resampled and the risk of selection bias is reduced.
+
+```{r forward, backward and stepwise selection}
+initial <- glm(SalePrice~ YearBuilt+ OverallQual + MSSubClass + LotArea, data = df_train)
+library(MASS)
+stepAIC(initial, direction = "both")
+
+```
+
+```{r recursive feature elimination}
+
+#The random forest functions are in a list called rfFuncs:
+str(rfFuncs)
+#These options can be changed. For example, to compute the expanded set of performance measures shown above
+newRF <- rfFuncs
+#newRF$summary <- fiveStats
+
+### The control function is similar to trainControl():
+ctrl <- rfeControl(method = "repeatedcv",
+                   repeats = 5,
+                   verbose = TRUE,
+                   functions = newRF,
+                   index = index)
+set.seed(721)
+
+
+rfRFE <- rfe(x = train[,c(2:55)],
+             y = train$SalePrice,
+             sizes = varSeq,
+             metric = "RMSE",
+             rfeControl = ctrl,
+             ## now pass options to randomForest()
+             ntree = 100)
+rfRFE
+#The process for predicting new samples is straightforward:
+predict(rfRFE, head(#df_test))
+  
+```
+
+### Filter Models
+caret has a function called sbf (for Selection By Filter) that can be used to screen predictors for models and to estimate performance using resampling. Any function can be written to screen the predictors.
+```{r}
+#to compute a p-value for each predictor, depending on the data type, the following approach could be used:
+pScore <- function(x,y){
+  numX <- length(unique(x))
+  if(numX>2){
+    ## with many values in x, compute a t_test
+    out <- t.test(x,y)$p.value
+  } else {
+    ## for binary predictors, test the odds ratio == 1 via fisher's exact test
+    out<- fisher.test(factor(x),y)$p.value
+  }
+  out
+}
+## apply the scores to each of the predictor columns
+score <- apply(X = train[,c(1:55)], 
+               MARGIN = 2, 
+               FUN = pScore,
+               y = train$SalePrice)
+
+tail(scores)
+
+#A function can also be designed to apply a p-value correction, such as the Bonferroni procedure:
+pCorrection <- function (score, x, y) {
+   ## The options x and y are required by the caret package
+   ## but are not used here
+   score <- p.adjust(score,  "bonferroni")
+   ## Return a logical vector to decide which predictors
+   ## to retain after the filter
+   keepers <- (score <= 0.05)
+ keepers
+}
+tail(pCorrection(scores))
+```
+
+```{r ldaSBF}
+#As before, caret contains a number of built-in functions for filter methods: linear regression, random forests, bagged trees, linear discriminant analysis, and na ̈ıve Bayes (see rfSBF). For example, ldaSBF has the following functions:
+str(ldaSBF)
+#These functions are similar to those shown for rfe. The score function com- putes some quantitative measure of importance (e.g., the p-values produced by the previous pScore function). The function filter takes these values (and the raw training set data) and determines which predictors pass the filter.
+
+```
+

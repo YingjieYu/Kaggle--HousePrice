@@ -1,0 +1,132 @@
+---
+title: "Untitled"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Because no saleprice infomation in test dataset, we split the 0.2 of the training dataset as test set to compare model performances.
+```{r load datasets}
+
+df_train <- read.csv("df_train.csv")
+train <- read.csv("train.csv")
+trainSalePrice <- train$SalePrice
+trainSalePrice <- trainSalePrice[-c(524,1299)]
+df_train$SalePrice <- trainSalePrice
+
+test <- read.csv("test.csv")
+df_test <- read.csv("df_test.csv")
+
+df_train<- df_train[,-which(names(df_train) %in% c("X","Id"))]
+df_test<- df_test[,-which(names(df_test) %in% c("X","Id"))]
+
+split <- createDataPartition(df_train$SalePrice, p = 0.8, times = 1)
+train <- df_train[split[[1]],]
+test <- df_train[-split[[1]],]
+
+```
+
+```{r lm}
+library(caret)#RMSE in caret package
+lmFitAllPredictors <- lm(SalePrice~., data = train, na.action="na.exclude")
+summary(lmFitAllPredictors)
+# RMSE: 23120
+lmPred1 <- predict(lmFitAllPredictors, newdata  = test, na.action = na.pass)
+head(lmPred1)
+
+#collect the observed and predicted values into a data frame, then use the caret function defaultSummary to estimate the test set performance:
+lmValues1 <- data.frame(obs = test$SalePrice, pred = lmPred1)
+defaultSummary(lmValues1) #RMSE 26080
+
+# robust lm using Huber approach-- MASS:rlm
+
+```
+
+```{r model performamce using corss-validation}
+ctrl <- trainControl(method = "cv", number = 5)
+set.seed(100)
+trainPredictors <- subset(train, select = -SalePrice)
+trainY <- train$SalePrice
+testY <- test$SalePrice
+
+lmFit1 <- train(x = trainPredictors, y = trainY,
+                method = "lm", trControl = ctrl)
+lmFit1 #28438.87
+xyplot(trainY ~ predict(lmFit1),
+                type = c("p","g"),
+       xlab = "Predicted", ylab = "Observed")
+#For this model, there are no obvious warning signs in the diagnostic plots.
+
+
+## try reduce the number of predictors such that there are no absolute pairwise correlations above 0.7
+
+colomnsToRemove <- nearZeroVar(train)
+train <- subset(train, select = -colomnsToRemove)
+test <- subset(test, select = -colomnsToRemove)
+trainPredictors <- subset(trainPredictors, select = -colomnsToRemove)
+
+corThresh <- 0.7
+# filling missing value with knn method
+dealna <-preProcess(trainPredictors, method = "knnImpute")
+trainPredictors <- predict(dealna, trainPredictors)
+tooHigh <- findCorrelation(cor(trainPredictors), corThresh)
+corrPred <- names(trainPredictors)[tooHigh]
+trainPredictorsFiltered <- trainPredictors[, - tooHigh]
+testFiltered <- test[, - tooHigh]
+set.seed(100)
+lmFiltered <- train(x=trainPredictorsFiltered, y = trainY,
+                    method = "lm", trControl = ctrl)
+lmFiltered #RMSE:30183.78 worse!
+
+
+## try robust linear regression. preprocess with PCA because rlm does not allow predictors to be singular(unlike lm).
+set.seed(100)
+rlmPCA <- train(trainPredictors, trainY,
+                method = "rlm",
+                preProcess = "pca",
+                trControl = ctrl)
+rlmPCA
+
+```
+
+```{r penalized regression models}
+library(MASS)
+library(elasticnet)
+ridgeModel <- enet(x = as.matrix(trainPredictors), y = trainY,
+                   #lambda argument specifies the ridge-regression penalty
+                   lambda = 0.001)
+ridgePred <- predict(ridgeModel, newx = as.matrix(test),
+                     #To produce a ridge-regression solution
+                     # define s=1 with mode = "fraction"
+                     s = 1, mode = "fraction",
+                     type = "fit")
+head(ridgePred$fit)
+ridgelmValue <- data.frame(obs = test$SalePrice, pred = ridgePred$fit)
+defaultSummary(ridgelmValue)# RMSE:26086
+
+## tune the penalty
+ridgeGrid <- data.frame(.lambda = seq(0, 0.1, length = 15))
+set.seed(100)
+ridgeRegFit <- train(trainPredictors, trainY,
+                     method = "ridge",
+                     tuneGrid = ridgeGrid,
+                     trControl = ctrl
+                     #preProc = c("cneter","scale")
+                     )
+ridgeRegFit # lambda = 0.01428571
+plot(ridgeRegFit)
+
+## enet 
+enetGrid <- expand.grid(.lambda =c(0, 0.014, 0.02),
+                        .fraction = seq(0.05, 1, length = 10))
+set.seed(100)
+enetTune <- train(trainPredictors, trainY,
+                  method = "enet",
+                  tuneGrid = enetGrid,
+                  trControl = ctrl,
+                  preProc = c("center","scale")
+                  )
+plot(enetTune)
+                     
+
+```
+

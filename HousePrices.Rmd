@@ -1,0 +1,22 @@
+---
+title: "HousePrices"
+author: "Neil Swarup"
+date: "10/19/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This is a test. Did this upload to github
+
+I am making a second edit. newline
+
+```{r}
+
+
+
+
+```
